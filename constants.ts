@@ -91,13 +91,21 @@ export const MOTIVATIONAL_QUOTES = [
   "Una mujer con uñas bonitas no necesita suerte, ya tiene actitud."
 ];
 
-// Generate time slots from 08:00 to 22:00 (as per image "Abierto 8:00-22:00")
-export const TIME_SLOTS: string[] = [];
-for (let h = 8; h < 22; h++) {
-  const hour = h.toString().padStart(2, '0');
-  TIME_SLOTS.push(`${hour}:00`);
-  TIME_SLOTS.push(`${hour}:30`);
-}
+/**
+ * Generate time slots from 08:00 to 22:00
+ * Changed to 1:30h (90 minutes) intervals to allow for service + prep time
+ */
+export const TIME_SLOTS: string[] = [
+  "08:00",
+  "09:30",
+  "11:00",
+  "12:30",
+  "14:00",
+  "15:30",
+  "17:00",
+  "18:30",
+  "20:00"
+];
 
 export const STORAGE_KEY = 'nails_by_diva_data_v3';
 export const EXPENSES_KEY = 'nails_by_diva_expenses_v3';
@@ -105,3 +113,4 @@ export const SETTINGS_KEY = 'nails_by_diva_settings_v3';
 export const REVIEWS_KEY = 'nails_by_diva_reviews_v3';
 export const CLIENT_HISTORY_KEY = 'nails_by_diva_client_history_v3';
 export const CATALOG_KEY = 'nails_by_diva_catalog_v3';
+export const FAVORITES_KEY = 'nails_by_diva_favorites_v3';

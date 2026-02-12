@@ -1,187 +1,140 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { Lock, Trash2, CheckCircle, MessageCircle, Calendar as CalendarIcon, Phone, DollarSign, CreditCard, Upload, QrCode, FileText, BarChart3, TrendingUp, TrendingDown, LayoutDashboard, Settings, List, Heart, Clock, BellRing, Sparkles, Image as ImageIcon, Edit2, Save, User, StickyNote, Filter } from 'lucide-react';
-import { Appointment, AppointmentStatus, AppSettings, Expense, ClientHistory, CatalogItem, ServiceType } from '../types';
-import { ADMIN_PIN } from '../constants';
-import { generateWhatsAppLink, formatDate, compressImage, generateId, formatCurrency, generateThankYouLink, getUniqueQuoteIndex, getQuoteByIndex } from '../utils';
+
+import React, { useState, useMemo } from 'react';
+import { Lock, Trash2, CheckCircle, MessageCircle, Calendar as CalendarIcon, DollarSign, Upload, QrCode, LayoutDashboard, Settings, List, Sparkles, ImageIcon, Edit2, Plus, Download, ChevronLeft, ChevronRight, X, Search, Star, ExternalLink, CalendarDays, BarChart3, TrendingUp, TrendingDown, Eye, CloudSync, Phone, ArrowRight, AlertCircle, Clock, FileText, Filter } from 'lucide-react';
+import { Appointment, AppointmentStatus, AppSettings, Expense, CatalogItem, FavoriteBooking, FinancialStats } from '../types';
+import { ADMIN_PIN, BANKING_DETAILS } from '../constants';
+import { generateWhatsAppLink, formatDate, compressImage, generateId, formatCurrency, generateGoogleCalendarLink, exportToCSV, syncToGoogleSheets, exportToPDF } from '../utils';
 
 interface AdminPanelProps {
   appointments: Appointment[];
   settings: AppSettings;
   expenses: Expense[];
-  clientHistory: ClientHistory;
-  catalog: Record<ServiceType, CatalogItem>;
+  catalog: Record<string, CatalogItem>;
   onUpdateStatus: (id: string, status: AppointmentStatus) => void;
   onUpdateAmount: (id: string, amount: number) => void;
   onUpdateSettings: (settings: AppSettings) => void;
-  onUpdateCatalog: (catalog: Record<ServiceType, CatalogItem>) => void;
+  onUpdateCatalog: (catalog: Record<string, CatalogItem>) => void;
   onDelete: (id: string) => void;
   onAddExpense: (expense: Expense) => void;
   onDeleteExpense: (id: string) => void;
-  onMarkThankYouSent: (id: string, phone: string, quoteIndex: number) => void;
   onUpdateNotes: (id: string, notes: string) => void;
+  onSaveFavorite: (phone: string, fav: FavoriteBooking) => void;
 }
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ 
-  appointments, 
-  settings, 
-  expenses,
-  clientHistory,
-  catalog,
-  onUpdateStatus, 
-  onUpdateAmount, 
-  onUpdateSettings,
-  onUpdateCatalog,
-  onDelete,
-  onAddExpense,
-  onDeleteExpense,
-  onMarkThankYouSent,
-  onUpdateNotes
+  appointments, settings, expenses, catalog, 
+  onUpdateStatus, onUpdateAmount, onUpdateSettings, onUpdateCatalog, 
+  onDelete, onAddExpense, onDeleteExpense, onUpdateNotes, onSaveFavorite
 }) => {
   const [pin, setPin] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [viewProof, setViewProof] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'appointments' | 'services' | 'settings'>('dashboard');
-  const [filterStatus, setFilterStatus] = useState<AppointmentStatus | 'ALL'>('ALL');
-  const [pendingThankYous, setPendingThankYous] = useState<Appointment[]>([]);
-  const [expenseForm, setExpenseForm] = useState({ description: '', amount: '', category: 'Insumos' });
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'appointments' | 'services' | 'expenses' | 'settings'>('dashboard');
+  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
+  const [calendarDate, setCalendarDate] = useState(new Date());
+  const [isSyncing, setIsSyncing] = useState(false);
   
-  // Note Editing State
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const [tempNote, setTempNote] = useState<string>('');
+  // Export states
+  const [startDate, setStartDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
 
-  // Reminder & Thank You Logic
-  useEffect(() => {
-    const checkPending = () => {
-      const now = new Date();
-      const due = appointments.filter(apt => {
-        if (apt.status !== AppointmentStatus.COMPLETED || apt.thankYouSent) return false;
-        const aptDate = new Date(`${apt.date}T${apt.time}`);
-        const thankYouTime = new Date(aptDate.getTime() + (2 * 60 * 60 * 1000) + (30 * 60 * 1000));
-        return now >= thankYouTime;
-      });
-      setPendingThankYous(due);
-    };
+  // Modals / Editors
+  const [editingService, setEditingService] = useState<CatalogItem | null>(null);
+  const [serviceError, setServiceError] = useState<string | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Partial<Expense> | null>(null);
+  const [selectedClientPhone, setSelectedClientPhone] = useState<string | null>(null);
+  const [historySearch, setHistorySearch] = useState('');
+  const [viewReceipt, setViewReceipt] = useState<string | null>(null);
 
-    if (isAuthenticated) {
-        checkPending();
-        const interval = setInterval(checkPending, 60000); // Check every minute
-        return () => clearInterval(interval);
-    }
-  }, [appointments, isAuthenticated]);
+  const stats = useMemo<FinancialStats>(() => {
+    const income = appointments.filter(a => a.status === AppointmentStatus.COMPLETED).reduce((sum, a) => sum + (a.amount || 0), 0);
+    const expTotal = expenses.reduce((sum, e) => sum + e.amount, 0);
+    return { income, expenses: expTotal, net: income - expTotal };
+  }, [appointments, expenses]);
+
+  const filteredStats = useMemo(() => {
+    const periodIncomes = appointments.filter(a => a.status === AppointmentStatus.COMPLETED && a.date >= startDate && a.date <= endDate);
+    const periodExpenses = expenses.filter(e => e.date >= startDate && e.date <= endDate);
+    const income = periodIncomes.reduce((sum, a) => sum + (a.amount || 0), 0);
+    const expTotal = periodExpenses.reduce((sum, e) => sum + e.amount, 0);
+    return { income, expenses: expTotal, net: income - expTotal, items: periodIncomes, expenseItems: periodExpenses };
+  }, [appointments, expenses, startDate, endDate]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (pin === ADMIN_PIN) {
-      setIsAuthenticated(true);
-    } else {
-      alert('PIN Incorrecto');
-    }
+    if (pin === ADMIN_PIN) setIsAuthenticated(true);
+    else alert('PIN Incorrecto');
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, callback: (base64: string) => void) => {
-    if (e.target.files && e.target.files[0]) {
-        try {
-            const compressed = await compressImage(e.target.files[0]);
-            callback(compressed);
-        } catch (error) {
-            console.error("Error processing image", error);
-            alert("Error al procesar la imagen.");
-        }
+  const handleSyncAll = async () => {
+    if (!settings.googleSheetWebhookUrl) return alert("Configura primero la URL del Webhook en Ajustes.");
+    if (!confirm("¿Deseas sincronizar todas las citas actuales con Google Sheets?")) return;
+    
+    setIsSyncing(true);
+    let successCount = 0;
+    
+    for (const apt of appointments) {
+      const ok = await syncToGoogleSheets(settings.googleSheetWebhookUrl, apt);
+      if (ok) successCount++;
     }
+    
+    setIsSyncing(false);
+    alert(`Sincronización completada. ${successCount} citas procesadas.`);
   };
 
-  const handleCatalogUpdate = (id: ServiceType, field: keyof CatalogItem, value: any) => {
-    const updatedCatalog = {
-      ...catalog,
-      [id]: {
-        ...catalog[id],
-        [field]: value
+  const handleStatusUpdateAndNotify = (id: string, status: AppointmentStatus) => {
+    onUpdateStatus(id, status);
+    const apt = appointments.find(a => a.id === id);
+    if (apt) {
+      if (status === AppointmentStatus.CONFIRMED || status === AppointmentStatus.COMPLETED || status === AppointmentStatus.IN_REVIEW) {
+        const link = generateWhatsAppLink(apt, false, status);
+        window.open(link, '_blank');
       }
-    };
-    onUpdateCatalog(updatedCatalog);
-  };
-
-  const handleExpenseSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!expenseForm.description || !expenseForm.amount) return;
-    onAddExpense({
-        id: generateId(),
-        description: expenseForm.description,
-        amount: Number(expenseForm.amount),
-        date: new Date().toISOString(),
-        category: expenseForm.category
-    });
-    setExpenseForm({ description: '', amount: '', category: 'Insumos' });
-  };
-
-  const handleSendThankYou = (apt: Appointment) => {
-    const usedIndices = clientHistory[apt.phone] || [];
-    const uniqueIndex = getUniqueQuoteIndex(usedIndices);
-    const quote = getQuoteByIndex(uniqueIndex);
-    const link = generateThankYouLink(apt, quote);
-    onMarkThankYouSent(apt.id, apt.phone, uniqueIndex);
-    window.open(link, '_blank');
-  };
-
-  const handleNoteSave = (id: string) => {
-    onUpdateNotes(id, tempNote);
-    setEditingNoteId(null);
-  };
-
-  const handleNoteEditStart = (apt: Appointment) => {
-    setEditingNoteId(apt.id);
-    setTempNote(apt.notes || '');
-  };
-
-  const stats = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const totalIncome = appointments
-        .filter(a => a.status !== AppointmentStatus.PENDING) 
-        .reduce((sum, a) => sum + (a.amount || 0), 0);
-    const totalPending = appointments
-        .filter(a => a.status === AppointmentStatus.PENDING)
-        .reduce((sum, a) => sum + (a.amount || 0), 0);
-    const todayPotential = appointments
-        .filter(a => a.date === today)
-        .reduce((sum, a) => sum + (a.amount || 0), 0);
-    const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-    const netProfit = totalIncome - totalExpenses;
-    const countPending = appointments.filter(a => a.status === AppointmentStatus.PENDING).length;
-    const countConfirmed = appointments.filter(a => a.status === AppointmentStatus.CONFIRMED).length;
-    const countCompleted = appointments.filter(a => a.status === AppointmentStatus.COMPLETED).length;
-
-    return { totalIncome, totalPending, todayPotential, totalExpenses, netProfit, countPending, countConfirmed, countCompleted };
-  }, [appointments, expenses]);
-
-  const sortedAppointments = useMemo(() => {
-    let filtered = [...appointments];
-    if (filterStatus !== 'ALL') {
-      filtered = filtered.filter(a => a.status === filterStatus);
     }
-    return filtered.sort((a, b) => new Date(a.date + 'T' + a.time).getTime() - new Date(b.date + 'T' + b.time).getTime());
-  }, [appointments, filterStatus]);
+  };
+
+  const saveService = () => {
+    if (!editingService) return;
+    if (!editingService.image) {
+      setServiceError("La imagen del servicio es obligatoria (URL o Archivo).");
+      return;
+    }
+    setServiceError(null);
+    onUpdateCatalog({...catalog, [editingService.id]: editingService});
+    setEditingService(null);
+  };
+
+  const handleAuditCSV = () => {
+    const incomeData = filteredStats.items.map(a => ({ Tipo: 'Ingreso', Fecha: a.date, Cliente: a.clientName, Concepto: a.service, Monto: a.amount }));
+    const expenseData = filteredStats.expenseItems.map(e => ({ Tipo: 'Egreso', Fecha: e.date, Proveedor: e.provider || '-', Concepto: e.description, Monto: e.amount }));
+    exportToCSV([...incomeData, ...expenseData], `Auditoria_Diva_${startDate}_${endDate}`);
+  };
+
+  const handleAuditPDF = () => {
+    exportToPDF(filteredStats.items, filteredStats.expenseItems, startDate, endDate, filteredStats);
+  };
+
+  const calendarDays = useMemo(() => {
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const days = [];
+    for (let i = 0; i < firstDay; i++) days.push(null);
+    for (let i = 1; i <= totalDays; i++) days.push(i);
+    return days;
+  }, [calendarDate]);
 
   if (!isAuthenticated) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] px-6">
-        <div className="w-full max-w-md bg-white p-8 rounded-2xl border border-brand-200 shadow-xl">
-          <div className="flex justify-center mb-6">
-            <div className="p-4 bg-brand-50 rounded-full border border-brand-200">
-              <Lock className="w-8 h-8 text-brand-900" />
-            </div>
+      <div className="flex flex-col items-center justify-center min-h-[70vh] p-6 animate-in fade-in zoom-in duration-500">
+        <div className="bg-white p-8 md:p-12 rounded-[2.5rem] md:rounded-[3rem] border border-brand-200 shadow-2xl max-w-sm w-full text-center">
+          <div className="w-20 h-20 bg-brand-900 rounded-full flex items-center justify-center mx-auto mb-8 shadow-2xl">
+             <Lock className="w-10 h-10 text-white" />
           </div>
-          <h3 className="text-center font-serif text-2xl text-brand-900 mb-6 tracking-widest">ACCESO DUEÑA</h3>
-          <form onSubmit={handleLogin} className="space-y-4">
-            <input
-              type="password"
-              placeholder="••••"
-              className="w-full bg-brand-50 border border-brand-200 text-center text-brand-900 text-3xl tracking-[0.5em] py-4 rounded-xl focus:outline-none focus:border-brand-900 transition-all placeholder:text-brand-300 placeholder:text-sm placeholder:tracking-normal"
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-            />
-            <button type="submit" className="w-full bg-brand-900 hover:bg-black text-white font-sans font-bold py-3 rounded-xl transition-all uppercase text-xs tracking-widest">
-              Ingresar
-            </button>
+          <h2 className="font-serif text-3xl md:text-4xl mb-2 text-brand-900 leading-tight">Acceso Diva</h2>
+          <form onSubmit={handleLogin} className="space-y-6">
+            <input type="password" placeholder="••••" className="w-full text-center text-5xl tracking-[0.5em] bg-brand-50 border-b-2 border-brand-200 p-5 outline-none focus:border-brand-900 transition-all font-mono" value={pin} onChange={e => setPin(e.target.value)} autoFocus />
+            <button type="submit" className="w-full bg-brand-900 text-white py-5 rounded-2xl font-black uppercase tracking-[0.2em] shadow-xl hover:bg-black active:scale-95 transition-all text-[10px] md:text-xs">Desbloquear</button>
           </form>
         </div>
       </div>
@@ -189,429 +142,345 @@ const AdminPanel: React.FC<AdminPanelProps> = ({
   }
 
   return (
-    <div className="w-full max-w-6xl mx-auto px-2 md:px-4 pb-20">
-      <div className="flex flex-col md:flex-row justify-between items-center mb-8 border-b border-brand-200 pb-4 gap-4">
-        <h2 className="font-serif text-3xl text-brand-900">Admin Panel</h2>
-        
-        {/* Navigation */}
-        <div className="flex flex-wrap justify-center bg-white p-1 rounded-xl border border-brand-200 shadow-sm">
-            {[
-              { id: 'dashboard', icon: LayoutDashboard, label: 'Resumen' },
-              { id: 'appointments', icon: List, label: 'Agenda', badge: pendingThankYous.length },
-              { id: 'services', icon: Sparkles, label: 'Servicios' },
-              { id: 'settings', icon: Settings, label: 'Config' },
-            ].map((tab) => (
-              <button 
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 uppercase tracking-wide
-                  ${activeTab === tab.id ? 'bg-brand-900 text-white shadow-md' : 'text-brand-400 hover:text-brand-900 hover:bg-brand-50'}`}
-              >
-                  <tab.icon className="w-4 h-4" /> 
-                  {tab.label}
-                  {tab.badge ? <span className="bg-red-500 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full animate-pulse">{tab.badge}</span> : null}
-              </button>
-            ))}
-        </div>
+    <div className="w-full max-w-6xl mx-auto px-2 md:px-6 pb-24 space-y-8 md:space-y-12 animate-in fade-in duration-500">
+      
+      <div className="flex overflow-x-auto no-scrollbar gap-2 bg-white/90 backdrop-blur-xl p-2 rounded-[1.5rem] md:rounded-[2.5rem] border border-brand-200 shadow-sm sticky top-2 z-[60] mx-2 md:mx-0">
+        {[
+          { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+          { id: 'appointments', icon: List, label: 'Agenda' },
+          { id: 'services', icon: Sparkles, label: 'Servicios' },
+          { id: 'expenses', icon: DollarSign, label: 'Gastos' },
+          { id: 'settings', icon: Settings, label: 'Ajustes' },
+        ].map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id as any)} className={`flex items-center gap-2 px-5 md:px-8 py-3 md:py-4 rounded-xl md:rounded-2xl text-[10px] md:text-xs font-black uppercase tracking-[0.15em] transition-all whitespace-nowrap ${activeTab === t.id ? 'bg-brand-900 text-white shadow-2xl' : 'text-brand-400 hover:bg-brand-50 hover:text-brand-900'}`}>
+            <t.icon className="w-3.5 h-3.5 md:w-4 md:h-4" /> 
+            <span className="inline">{t.label}</span>
+          </button>
+        ))}
       </div>
 
-      {/* --- DASHBOARD --- */}
       {activeTab === 'dashboard' && (
-        <div className="animate-in fade-in duration-500 space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white p-5 rounded-xl border border-brand-200 shadow-sm relative overflow-hidden">
-                    <div className="absolute top-0 right-0 p-3 opacity-10"><TrendingUp className="w-16 h-16 text-green-900" /></div>
-                    <p className="text-brand-500 text-[10px] uppercase tracking-widest mb-1">Ingresos Totales</p>
-                    <h3 className="text-2xl font-mono font-bold text-green-700">{formatCurrency(stats.totalIncome)}</h3>
-                </div>
-                <div className="bg-white p-5 rounded-xl border border-brand-200 shadow-sm relative overflow-hidden">
-                    <div className="absolute top-0 right-0 p-3 opacity-10"><TrendingDown className="w-16 h-16 text-red-900" /></div>
-                    <p className="text-brand-500 text-[10px] uppercase tracking-widest mb-1">Gastos</p>
-                    <h3 className="text-2xl font-mono font-bold text-red-600">{formatCurrency(stats.totalExpenses)}</h3>
-                </div>
-                <div className="bg-white p-5 rounded-xl border border-brand-200 shadow-sm relative overflow-hidden">
-                    <div className="absolute top-0 right-0 p-3 opacity-10"><DollarSign className="w-16 h-16 text-brand-900" /></div>
-                    <p className="text-brand-500 text-[10px] uppercase tracking-widest mb-1">Ganancia Neta</p>
-                    <h3 className="text-2xl font-mono font-bold text-brand-900">{formatCurrency(stats.netProfit)}</h3>
-                </div>
-                <div className="bg-brand-900 p-5 rounded-xl border border-brand-800 shadow-sm relative overflow-hidden">
-                    <p className="text-brand-200 text-[10px] uppercase tracking-widest mb-1">Proyección Hoy</p>
-                    <h3 className="text-2xl font-mono font-bold text-white">{formatCurrency(stats.todayPotential)}</h3>
-                </div>
+        <div className="space-y-8 md:space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8 px-2 md:px-0">
+            <div className="premium-card bg-white p-6 md:p-10 rounded-[2rem] border border-brand-200 shadow-md relative overflow-hidden">
+                <p className="text-[10px] font-black text-brand-400 uppercase tracking-[0.25em] mb-3">Ingresos Totales</p>
+                <h3 className="text-3xl md:text-5xl font-mono font-bold text-green-600">{formatCurrency(stats.income)}</h3>
+                <TrendingUp className="absolute -bottom-4 -right-4 w-32 h-32 text-green-500 opacity-[0.03] rotate-12" />
             </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 bg-white rounded-xl p-6 border border-brand-200 shadow-sm">
-                    <h3 className="text-lg font-serif text-brand-900 mb-6 flex items-center gap-2"><BarChart3 className="w-5 h-5 text-gold-500" /> Estadísticas</h3>
-                    <div className="space-y-4">
-                        {[{l: 'Pendientes', c: stats.countPending, t: 'text-yellow-600', b: 'bg-yellow-400'}, 
-                          {l: 'Confirmadas', c: stats.countConfirmed, t: 'text-green-600', b: 'bg-green-500'}, 
-                          {l: 'Completadas', c: stats.countCompleted, t: 'text-blue-600', b: 'bg-blue-500'}].map((item, i) => (
-                            <div key={i}>
-                                <div className="flex justify-between text-xs mb-1">
-                                    <span className={item.t}>{item.l} ({item.c})</span>
-                                </div>
-                                <div className="w-full bg-brand-50 rounded-full h-1.5 border border-brand-100">
-                                    <div className={`${item.b} h-1.5 rounded-full transition-all duration-1000`} style={{ width: `${(item.c / Math.max(appointments.length, 1)) * 100}%` }}></div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-
-                 <div className="bg-white rounded-xl p-6 border border-brand-200 shadow-sm h-fit">
-                    <h3 className="text-lg font-serif text-brand-900 mb-4">Nuevo Gasto</h3>
-                    <form onSubmit={handleExpenseSubmit} className="space-y-4">
-                        <input 
-                            type="text" 
-                            placeholder="Descripción" 
-                            className="w-full bg-brand-50 border border-brand-200 rounded-lg p-3 text-sm focus:border-brand-900 outline-none text-brand-900"
-                            value={expenseForm.description}
-                            onChange={e => setExpenseForm({...expenseForm, description: e.target.value})}
-                        />
-                        <div className="flex gap-2">
-                             <input 
-                                type="number" 
-                                placeholder="Monto" 
-                                className="w-1/2 bg-brand-50 border border-brand-200 rounded-lg p-3 text-sm focus:border-brand-900 outline-none text-brand-900"
-                                value={expenseForm.amount}
-                                onChange={e => setExpenseForm({...expenseForm, amount: e.target.value})}
-                            />
-                            <select 
-                                className="w-1/2 bg-brand-50 border border-brand-200 rounded-lg p-3 text-sm focus:border-brand-900 outline-none text-brand-800"
-                                value={expenseForm.category}
-                                onChange={e => setExpenseForm({...expenseForm, category: e.target.value})}
-                            >
-                                <option>Insumos</option>
-                                <option>Alquiler</option>
-                                <option>Servicios</option>
-                                <option>Personal</option>
-                                <option>Otros</option>
-                            </select>
-                        </div>
-                        <button type="submit" className="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-lg text-xs font-bold border border-red-200 transition-all uppercase tracking-wider">
-                            Registrar Salida
-                        </button>
-                    </form>
-                </div>
+            <div className="premium-card bg-white p-6 md:p-10 rounded-[2rem] border border-brand-200 shadow-md relative overflow-hidden">
+                <p className="text-[10px] font-black text-brand-400 uppercase tracking-[0.25em] mb-3">Egresos Totales</p>
+                <h3 className="text-3xl md:text-5xl font-mono font-bold text-red-600">{formatCurrency(stats.expenses)}</h3>
+                <TrendingDown className="absolute -bottom-4 -right-4 w-32 h-32 text-red-500 opacity-[0.03] rotate-12" />
             </div>
+            <div className="premium-card bg-brand-900 p-6 md:p-10 rounded-[2rem] shadow-2xl relative overflow-hidden sm:col-span-2 lg:col-span-1 text-white">
+                <p className="text-[10px] font-black text-gold-400/80 uppercase tracking-[0.25em] mb-3">Utilidad Neta</p>
+                <h3 className="text-3xl md:text-5xl font-mono font-bold">{formatCurrency(stats.net)}</h3>
+                <Sparkles className="absolute -bottom-4 -right-4 w-32 h-32 text-white opacity-[0.05] rotate-12" />
+            </div>
+          </div>
+
+          <div className="bg-white p-8 md:p-12 rounded-[2.5rem] border border-brand-200 shadow-xl mx-2 md:mx-0">
+             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
+                <div>
+                   <h3 className="font-serif text-3xl text-brand-900">Reportes de Auditoria</h3>
+                   <p className="text-[10px] font-black text-brand-300 uppercase tracking-widest mt-2">Exportación de Datos Financieros</p>
+                </div>
+                <div className="flex flex-wrap gap-3 w-full md:w-auto">
+                   <div className="flex items-center gap-2 bg-brand-50 p-2 rounded-xl border border-brand-200">
+                      <Filter className="w-4 h-4 text-brand-300" />
+                      <input type="date" className="bg-transparent border-none text-[10px] font-bold outline-none" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                      <span className="text-brand-300 text-xs">al</span>
+                      <input type="date" className="bg-transparent border-none text-[10px] font-bold outline-none" value={endDate} onChange={e => setEndDate(e.target.value)} />
+                   </div>
+                   <button onClick={handleAuditCSV} className="p-4 bg-brand-50 text-brand-900 rounded-xl hover:bg-brand-900 hover:text-white transition-all shadow-sm flex items-center gap-2 text-[10px] font-black uppercase"><Download className="w-4 h-4" /> CSV</button>
+                   <button onClick={handleAuditPDF} className="p-4 bg-brand-900 text-white rounded-xl hover:bg-black transition-all shadow-xl flex items-center gap-2 text-[10px] font-black uppercase"><FileText className="w-4 h-4" /> PDF Audit</button>
+                </div>
+             </div>
+             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="p-6 bg-brand-50/50 rounded-2xl border border-brand-100 text-center">
+                   <p className="text-[9px] font-black text-brand-300 uppercase mb-1">Inversión Periodo</p>
+                   <p className="text-2xl font-mono font-black text-brand-900">{formatCurrency(filteredStats.income)}</p>
+                </div>
+                <div className="p-6 bg-brand-50/50 rounded-2xl border border-brand-100 text-center">
+                   <p className="text-[9px] font-black text-brand-300 uppercase mb-1">Gasto Periodo</p>
+                   <p className="text-2xl font-mono font-black text-red-600">{formatCurrency(filteredStats.expenses)}</p>
+                </div>
+                <div className="p-6 bg-brand-900 rounded-2xl shadow-lg text-center text-white">
+                   <p className="text-[9px] font-black text-gold-400/80 uppercase mb-1">Balance Periodo</p>
+                   <p className="text-2xl font-mono font-black">{formatCurrency(filteredStats.net)}</p>
+                </div>
+             </div>
+          </div>
         </div>
       )}
 
-      {/* --- SERVICES MANAGEMENT --- */}
-      {activeTab === 'services' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-500">
-           {(Object.values(catalog) as CatalogItem[]).map((item) => (
-               <div key={item.id} className="bg-white rounded-xl overflow-hidden border border-brand-200 shadow-sm group hover:shadow-md transition-all">
-                   <div className="relative h-40 bg-brand-100">
-                       <img src={item.image} alt={item.title} className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity" />
-                       <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent"></div>
-                       <div className="absolute bottom-4 left-4">
-                           <h3 className="font-serif text-xl text-white">{item.title}</h3>
-                       </div>
-                       <label className="absolute top-2 right-2 bg-white/80 hover:bg-white text-brand-900 p-2 rounded-full cursor-pointer backdrop-blur-md transition-colors shadow-sm">
-                           <Edit2 className="w-4 h-4" />
-                           <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, (b64) => handleCatalogUpdate(item.id, 'image', b64))} />
-                       </label>
-                   </div>
-                   <div className="p-4 space-y-4">
-                       <div>
-                           <label className="text-[10px] text-brand-500 uppercase tracking-wider font-bold">Precio (Gs)</label>
-                           <div className="flex items-center gap-2 bg-brand-50 border border-brand-200 rounded-lg px-3 py-2 mt-1 focus-within:border-brand-900">
-                               <DollarSign className="w-4 h-4 text-brand-500" />
-                               <input 
-                                  type="number" 
-                                  value={item.price}
-                                  onChange={(e) => handleCatalogUpdate(item.id, 'price', Number(e.target.value))}
-                                  className="bg-transparent outline-none text-brand-900 w-full font-mono font-bold"
-                               />
-                           </div>
-                       </div>
-                   </div>
-               </div>
-           ))}
-        </div>
-      )}
-
-      {/* --- APPOINTMENTS LIST --- */}
       {activeTab === 'appointments' && (
-        <div className="animate-in fade-in duration-500 space-y-6">
-            
-            {/* Filter Buttons */}
-            <div className="bg-white p-2 rounded-2xl border border-brand-200 shadow-sm flex flex-wrap gap-2 items-center justify-between px-4">
-               <div className="flex items-center gap-2 text-brand-500 text-xs font-bold uppercase tracking-widest">
-                  <Filter className="w-4 h-4" /> Filtrar por:
-               </div>
-               <div className="flex flex-wrap gap-2">
-                  <button 
-                    onClick={() => setFilterStatus('ALL')}
-                    className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase transition-all border ${filterStatus === 'ALL' ? 'bg-brand-900 text-white border-brand-900 shadow-md' : 'bg-brand-50 text-brand-500 border-brand-100 hover:border-brand-300'}`}
-                  >
-                    Todos
-                  </button>
-                  <button 
-                    onClick={() => setFilterStatus(AppointmentStatus.PENDING)}
-                    className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase transition-all border ${filterStatus === AppointmentStatus.PENDING ? 'bg-yellow-500 text-white border-yellow-500 shadow-md' : 'bg-yellow-50 text-yellow-600 border-yellow-100 hover:border-yellow-300'}`}
-                  >
-                    Pendientes
-                  </button>
-                  <button 
-                    onClick={() => setFilterStatus(AppointmentStatus.CONFIRMED)}
-                    className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase transition-all border ${filterStatus === AppointmentStatus.CONFIRMED ? 'bg-green-600 text-white border-green-600 shadow-md' : 'bg-green-50 text-green-700 border-green-100 hover:border-green-300'}`}
-                  >
-                    Confirmados
-                  </button>
-                  <button 
-                    onClick={() => setFilterStatus(AppointmentStatus.COMPLETED)}
-                    className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase transition-all border ${filterStatus === AppointmentStatus.COMPLETED ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 'bg-blue-50 text-blue-700 border-blue-100 hover:border-blue-300'}`}
-                  >
-                    Finalizados
-                  </button>
-               </div>
+        <div className="space-y-4 md:space-y-6 animate-in fade-in duration-700">
+           <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-6 md:p-8 rounded-[2rem] border border-brand-200 shadow-lg gap-6">
+            <div className="flex items-center gap-5">
+              <CalendarDays className="w-8 h-8 text-brand-900" />
+              <div>
+                <h3 className="font-serif text-2xl md:text-4xl text-brand-900">Agenda Diva</h3>
+                <p className="text-[10px] font-black text-brand-300 uppercase tracking-widest">Turnos en Tiempo Real</p>
+              </div>
             </div>
+          </div>
+          <div className="space-y-4">
+             {appointments.slice().reverse().map(a => (
+               <div key={a.id} className={`premium-card bg-white p-5 md:p-8 rounded-[2rem] border-l-8 shadow-sm flex flex-col md:flex-row items-center justify-between gap-6 ${
+                 a.status === AppointmentStatus.COMPLETED ? 'border-blue-500' : 
+                 a.status === AppointmentStatus.CONFIRMED ? 'border-green-500' : 
+                 a.status === AppointmentStatus.IN_REVIEW ? 'border-orange-400' : 'border-yellow-400'}`}>
+                  <div className="w-full md:flex-1 flex items-center gap-6">
+                     <div className="bg-brand-50 p-4 rounded-2xl text-center min-w-[90px] border border-brand-100">
+                        <p className="text-[9px] font-black text-brand-300 uppercase">{a.date.split('-').reverse().slice(0,2).join('/')}</p>
+                        <p className="text-xl font-mono font-black text-brand-900 mt-1">{a.time}</p>
+                     </div>
+                     <div className="flex-1 min-w-0">
+                        <h4 className="font-serif text-2xl text-brand-900 truncate">{a.clientName}</h4>
+                        <div className="flex flex-wrap gap-2 items-center mt-3">
+                           <span className="text-[9px] font-black uppercase tracking-widest px-3 py-1 bg-brand-50 text-brand-800 rounded-full border border-brand-200">{a.service}</span>
+                           <span className={`text-[8px] font-black uppercase px-3 py-1 rounded-full text-white ${
+                             a.status === AppointmentStatus.COMPLETED ? 'bg-blue-600' : 
+                             a.status === AppointmentStatus.CONFIRMED ? 'bg-green-600' : 
+                             a.status === AppointmentStatus.IN_REVIEW ? 'bg-orange-500' : 'bg-yellow-500'}`}>
+                             {a.status}
+                           </span>
+                        </div>
+                     </div>
+                  </div>
+                  <div className="flex w-full md:w-auto gap-3">
+                     {a.status !== AppointmentStatus.COMPLETED && (
+                       <button onClick={() => handleStatusUpdateAndNotify(a.id, a.status === AppointmentStatus.PENDING ? AppointmentStatus.IN_REVIEW : a.status === AppointmentStatus.IN_REVIEW ? AppointmentStatus.CONFIRMED : AppointmentStatus.COMPLETED)} className="flex-1 p-4 bg-brand-900 text-white rounded-2xl hover:bg-black transition-all shadow-md"><CheckCircle className="w-6 h-6" /></button>
+                     )}
+                     <button onClick={() => onDelete(a.id)} className="flex-1 p-4 bg-red-50 text-red-400 rounded-2xl border border-brand-100"><Trash2 className="w-6 h-6" /></button>
+                  </div>
+               </div>
+             ))}
+          </div>
+        </div>
+      )}
 
-            {pendingThankYous.length > 0 && (
-              <div className="bg-pink-50 border border-pink-200 rounded-xl p-4 mb-6 flex flex-col md:flex-row items-center justify-between gap-4 animate-pulse">
-                <div className="flex items-center gap-3 text-pink-700">
-                   <BellRing className="w-6 h-6" />
-                   <div>
-                      <p className="font-bold">Agradecimientos Pendientes</p>
-                      <p className="text-xs">{pendingThankYous.length} clientes finalizaron su servicio hace poco.</p>
+      {activeTab === 'expenses' && (
+        <div className="space-y-8 md:space-y-12 animate-in fade-in duration-700">
+           <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-8 md:p-12 rounded-[2.5rem] border border-brand-200 shadow-2xl gap-8">
+              <div>
+                <h3 className="font-serif text-3xl md:text-5xl text-brand-900 leading-tight">Control de Auditoria</h3>
+                <p className="text-[10px] md:text-xs font-black text-brand-300 uppercase tracking-widest mt-3">Gestión de Egresos e Insumos</p>
+              </div>
+              <button onClick={() => setEditingExpense({ id: generateId(), date: new Date().toISOString().split('T')[0], category: 'Insumos', provider: '', notes: '', amount: 0 })} className="w-full sm:w-auto flex items-center justify-center gap-3 px-10 py-5 bg-brand-900 text-white rounded-3xl text-xs font-black uppercase shadow-2xl hover:bg-black transition-all"><Plus className="w-5 h-5" /> Registrar Gasto</button>
+           </div>
+           <div className="bg-white rounded-[2rem] border border-brand-200 shadow-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                   <thead className="bg-brand-50 border-b border-brand-100 text-[10px] font-black uppercase text-brand-400">
+                      <tr>
+                         <th className="px-8 py-6">Fecha y Proveedor</th>
+                         <th className="px-8 py-6">Concepto / Categoría</th>
+                         <th className="px-8 py-6">Costo (Gs)</th>
+                         <th className="px-8 py-6 text-center">Recibo</th>
+                         <th className="px-8 py-6 text-center">Acción</th>
+                      </tr>
+                   </thead>
+                   <tbody className="divide-y divide-brand-50">
+                      {expenses.slice().reverse().map(e => (
+                        <tr key={e.id} className="hover:bg-brand-50/30 transition-all">
+                           <td className="px-8 py-6">
+                              <p className="font-bold text-brand-900">{e.provider || 'Sin Proveedor'}</p>
+                              <p className="text-[10px] text-brand-300 uppercase mt-1">{e.date}</p>
+                           </td>
+                           <td className="px-8 py-6">
+                              <p className="font-medium text-brand-800">{e.description}</p>
+                              <span className="text-[9px] font-black uppercase px-3 py-1 bg-brand-50 text-brand-400 rounded-md border border-brand-100 mt-2 inline-block">{e.category}</span>
+                           </td>
+                           <td className="px-8 py-6">
+                              <span className="font-mono font-black text-red-600 text-lg">{formatCurrency(e.amount)}</span>
+                           </td>
+                           <td className="px-8 py-6 text-center">
+                              {e.image ? (
+                                <button onClick={() => setViewReceipt(e.image!)} className="p-3 bg-brand-50 text-brand-900 rounded-xl border border-brand-200 hover:bg-brand-900 hover:text-white transition-all"><Eye className="w-5 h-5" /></button>
+                              ) : <span className="text-[9px] text-brand-200 uppercase italic">Sin Recibo</span>}
+                           </td>
+                           <td className="px-8 py-6 text-center">
+                              <button onClick={() => onDeleteExpense(e.id)} className="p-3 text-brand-200 hover:text-red-500 transition-all"><Trash2 className="w-5 h-5" /></button>
+                           </td>
+                        </tr>
+                      ))}
+                   </tbody>
+                </table>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {editingExpense && (
+        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center bg-brand-900/90 backdrop-blur-xl p-0 md:p-6 animate-in fade-in duration-300">
+           <div className="bg-white w-full max-w-2xl rounded-t-[2.5rem] md:rounded-[4rem] shadow-2xl overflow-hidden flex flex-col max-h-[92vh] animate-in slide-in-from-bottom-20 duration-500">
+              <div className="p-8 border-b border-brand-50 flex justify-between items-center">
+                 <h3 className="font-serif text-3xl text-brand-900">Registro de Gasto</h3>
+                 <button onClick={() => setEditingExpense(null)} className="p-4 bg-brand-50 rounded-full hover:bg-brand-900 hover:text-white transition-all"><X className="w-7 h-7" /></button>
+              </div>
+              <div className="p-8 space-y-8 overflow-y-auto custom-scrollbar flex-1">
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Proveedor / Negocio</label>
+                       <input type="text" className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all font-bold" value={editingExpense.provider} onChange={e => setEditingExpense({...editingExpense, provider: e.target.value})} />
+                    </div>
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Inversión / Costo (Gs)</label>
+                       <input type="number" className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all font-mono font-black text-2xl" value={editingExpense.amount} onChange={e => setEditingExpense({...editingExpense, amount: Number(e.target.value)})} />
+                    </div>
+                 </div>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Categoría</label>
+                       <select className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all font-bold" value={editingExpense.category} onChange={e => setEditingExpense({...editingExpense, category: e.target.value})}>
+                          <option value="Insumos">Insumos (Esmaltes, Geles, etc)</option>
+                          <option value="Herramientas">Herramientas (Brocas, Cabinas)</option>
+                          <option value="Marketing">Publicidad y Diseño</option>
+                          <option value="Servicios">Agua, Luz, Alquiler</option>
+                          <option value="Otros">Otros Egresos</option>
+                       </select>
+                    </div>
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Fecha</label>
+                       <input type="date" className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all font-bold" value={editingExpense.date} onChange={e => setEditingExpense({...editingExpense, date: e.target.value})} />
+                    </div>
+                 </div>
+                 <div className="space-y-3">
+                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Concepto / Descripción del Insumo</label>
+                    <textarea className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all h-24 text-sm" value={editingExpense.description} onChange={e => setEditingExpense({...editingExpense, description: e.target.value})} placeholder="Ej: Compra de top coat y base rubber..." />
+                 </div>
+                 <div className="space-y-3">
+                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Comprobante / Recibo (Imagen)</label>
+                    <label className="flex flex-col items-center justify-center gap-3 w-full bg-brand-50 border-2 border-dashed border-brand-200 py-10 rounded-3xl cursor-pointer hover:border-brand-900 transition-all">
+                        {editingExpense.image ? <img src={editingExpense.image} className="h-20 w-20 object-cover rounded-xl shadow-md" /> : <Upload className="w-8 h-8 text-brand-300" />}
+                        <span className="text-[10px] font-black uppercase tracking-widest">Cargar Comprobante</span>
+                        <input type="file" className="hidden" accept="image/*" onChange={async e => {if(e.target.files?.[0]){ const b64 = await compressImage(e.target.files[0]); setEditingExpense({...editingExpense, image: b64}); }}} />
+                    </label>
+                 </div>
+              </div>
+              <div className="p-8 border-t bg-brand-50 flex justify-center sticky bottom-0 z-10">
+                 <button onClick={() => { if(editingExpense.description && editingExpense.amount){ onAddExpense(editingExpense as Expense); setEditingExpense(null); } }} className="w-full md:w-auto px-20 py-6 bg-brand-900 text-white rounded-[2rem] font-black uppercase tracking-widest text-xs shadow-2xl hover:bg-black active:scale-95 transition-all">Registrar Auditoria</button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {activeTab === 'services' && (
+        <div className="space-y-8 md:space-y-12 animate-in fade-in duration-700">
+           <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-8 md:p-12 rounded-[2.5rem] border border-brand-200 shadow-2xl gap-8">
+              <div>
+                <h3 className="font-serif text-3xl md:text-5xl text-brand-900 leading-tight">Catálogo Premium</h3>
+                <p className="text-[10px] md:text-xs font-black text-brand-300 uppercase tracking-widest mt-3">Gestión de Servicios</p>
+              </div>
+              <button onClick={() => { setServiceError(null); setEditingService({ id: generateId(), title: '', price: 0, description: '', image: '' }); }} className="w-full sm:w-auto flex items-center justify-center gap-3 px-10 py-5 bg-brand-900 text-white rounded-3xl text-xs font-black uppercase tracking-widest shadow-2xl hover:bg-black transition-all"><Plus className="w-5 h-5" /> Nuevo Servicio</button>
+           </div>
+           
+           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 md:gap-12">
+              {(Object.values(catalog) as CatalogItem[]).map(s => (
+                <div key={s.id} className="premium-card bg-white rounded-[2.5rem] border border-brand-200 shadow-xl overflow-hidden flex flex-col group">
+                   <div className="relative h-64 overflow-hidden">
+                      <img src={s.image} className="w-full h-full object-cover group-hover:scale-110 transition-all duration-1000" alt={s.title} />
+                      <div className="absolute top-5 right-5">
+                         <button onClick={() => { setServiceError(null); setEditingService(s); }} className="p-3 bg-white/95 backdrop-blur-md rounded-full text-brand-900 shadow-2xl hover:bg-brand-900 hover:text-white transition-all"><Edit2 className="w-5 h-5" /></button>
+                      </div>
+                   </div>
+                   <div className="p-8 flex-1 flex flex-col">
+                      <h4 className="font-serif text-2xl mb-3 text-brand-900">{s.title}</h4>
+                      <p className="text-sm text-brand-800 line-clamp-4 mb-8 opacity-80 leading-relaxed flex-1">{s.description}</p>
+                      <p className="font-mono font-black text-xl text-brand-900">{formatCurrency(s.price)}</p>
                    </div>
                 </div>
-                <div className="text-xs bg-white px-3 py-1 rounded-full text-pink-500 font-bold shadow-sm">
-                   Revisar agenda abajo 👇
-                </div>
-              </div>
-            )}
-
-            {sortedAppointments.length === 0 ? (
-                <div className="text-center py-20 text-brand-400 italic bg-white rounded-2xl border border-brand-200">
-                  <div className="flex flex-col items-center gap-4">
-                     <FileText className="w-12 h-12 opacity-20" />
-                     <p>No hay citas registradas en esta categoría.</p>
-                  </div>
-                </div>
-            ) : (
-                sortedAppointments.map((apt) => {
-                    const isToday = apt.date === new Date().toISOString().split('T')[0];
-                    const statusColors = {
-                        [AppointmentStatus.PENDING]: 'border-yellow-400 bg-white',
-                        [AppointmentStatus.CONFIRMED]: 'border-green-500 bg-white',
-                        [AppointmentStatus.COMPLETED]: 'border-blue-500 bg-brand-50/50'
-                    };
-
-                    return (
-                    <div key={apt.id} className={`group relative rounded-xl border-l-4 shadow-sm hover:shadow-lg transition-all p-5 border-t border-r border-b border-gray-100 animate-in fade-in zoom-in duration-300 ${statusColors[apt.status]}`}>
-                        
-                        <div className="flex flex-col lg:flex-row gap-6">
-                            
-                            {/* Main Info */}
-                            <div className="flex-1 space-y-4">
-                                <div className="flex justify-between items-start">
-                                    <div>
-                                        <h4 className="font-serif text-xl text-brand-900 flex items-center gap-2">
-                                            {apt.clientName}
-                                            {isToday && <span className="bg-brand-900 text-white text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">Hoy</span>}
-                                        </h4>
-                                        <div className="flex items-center gap-2 mt-1">
-                                            <span className={`text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-sm ${
-                                                apt.status === AppointmentStatus.CONFIRMED ? 'bg-green-100 text-green-700' :
-                                                apt.status === AppointmentStatus.COMPLETED ? 'bg-blue-100 text-blue-700' : 'bg-yellow-100 text-yellow-700'
-                                            }`}>{apt.status}</span>
-                                            <span className="text-brand-400 text-xs">#{apt.id}</span>
-                                        </div>
-                                    </div>
-                                    <div className="text-right">
-                                       <label className="block text-[9px] uppercase text-brand-400 font-bold mb-1">Monto Servicio</label>
-                                       <div className="flex items-center justify-end gap-1">
-                                            <span className="text-brand-300">$</span>
-                                            <input 
-                                                type="number" 
-                                                value={apt.amount} 
-                                                onChange={(e) => onUpdateAmount(apt.id, Number(e.target.value))}
-                                                className="w-24 text-right font-mono font-bold text-lg text-brand-900 bg-transparent border-b border-dashed border-brand-300 focus:border-brand-900 focus:outline-none transition-colors"
-                                            />
-                                       </div>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-brand-50/50 p-3 rounded-lg border border-brand-100/50">
-                                    <div>
-                                        <span className="text-[9px] uppercase text-brand-400 font-bold block mb-1">Fecha</span>
-                                        <div className="flex items-center gap-1.5 text-brand-800 text-sm font-medium">
-                                            <CalendarIcon className="w-3.5 h-3.5 text-brand-400" />
-                                            {formatDate(apt.date)}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <span className="text-[9px] uppercase text-brand-400 font-bold block mb-1">Hora</span>
-                                        <div className="flex items-center gap-1.5 text-brand-800 text-sm font-medium">
-                                            <Clock className="w-3.5 h-3.5 text-brand-400" />
-                                            {apt.time} hs
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <span className="text-[9px] uppercase text-brand-400 font-bold block mb-1">Servicio</span>
-                                        <div className="flex items-center gap-1.5 text-brand-800 text-sm font-medium">
-                                            <Sparkles className="w-3.5 h-3.5 text-brand-400" />
-                                            {apt.service}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <span className="text-[9px] uppercase text-brand-400 font-bold block mb-1">Pago</span>
-                                        <div className="flex items-center gap-1.5 text-brand-800 text-sm font-medium">
-                                            <CreditCard className="w-3.5 h-3.5 text-brand-400" />
-                                            {apt.paymentMethod}
-                                            {apt.paymentProof && (
-                                                <button onClick={() => setViewProof(apt.paymentProof!)} className="text-blue-500 hover:text-blue-700 ml-1">
-                                                    <ImageIcon className="w-3.5 h-3.5" />
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                {/* Notes Section for Completed Services */}
-                                {apt.status === AppointmentStatus.COMPLETED && (
-                                    <div className="mt-2">
-                                        <div className="flex items-center justify-between mb-1">
-                                            <label className="text-[9px] uppercase text-brand-400 font-bold flex items-center gap-1">
-                                                <StickyNote className="w-3 h-3" /> Notas del Servicio / Comentarios
-                                            </label>
-                                            {editingNoteId !== apt.id && (
-                                                <button onClick={() => handleNoteEditStart(apt)} className="text-[10px] text-brand-500 hover:text-brand-900 underline">Editar</button>
-                                            )}
-                                        </div>
-                                        
-                                        {editingNoteId === apt.id ? (
-                                            <div className="flex gap-2">
-                                                <textarea 
-                                                    value={tempNote}
-                                                    onChange={(e) => setTempNote(e.target.value)}
-                                                    className="w-full text-xs bg-white border border-brand-300 rounded p-2 focus:border-brand-900 outline-none"
-                                                    rows={2}
-                                                    placeholder="Escribe detalles sobre el cliente o servicio..."
-                                                />
-                                                <button onClick={() => handleNoteSave(apt.id)} className="bg-brand-900 text-white px-3 rounded-lg self-start py-2">
-                                                    <Save className="w-4 h-4" />
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <div className="bg-brand-50/50 border border-brand-100 rounded p-2 text-xs text-brand-700 italic min-h-[40px]">
-                                                {apt.notes || "Sin notas registradas."}
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Actions Column */}
-                            <div className="flex lg:flex-col gap-2 lg:w-48 lg:border-l border-brand-100 lg:pl-6 justify-center">
-                                {/* Workflow Actions */}
-                                {apt.status === AppointmentStatus.PENDING && (
-                                    <button onClick={() => onUpdateStatus(apt.id, AppointmentStatus.CONFIRMED)} className="w-full bg-brand-900 hover:bg-black text-white text-xs py-3 px-3 rounded-lg font-bold transition-all flex items-center justify-center gap-2 shadow-md">
-                                        <CheckCircle className="w-4 h-4" /> CONFIRMAR
-                                    </button>
-                                )}
-                                {apt.status === AppointmentStatus.CONFIRMED && (
-                                    <button onClick={() => onUpdateStatus(apt.id, AppointmentStatus.COMPLETED)} className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-3 px-3 rounded-lg font-bold transition-all flex items-center justify-center gap-2 shadow-md">
-                                        <CheckCircle className="w-4 h-4" /> FINALIZAR
-                                    </button>
-                                )}
-                                
-                                <div className="grid grid-cols-2 lg:grid-cols-1 gap-2 w-full">
-                                    <a href={generateWhatsAppLink(apt, true)} target="_blank" rel="noopener noreferrer" className="w-full bg-white hover:bg-brand-50 text-brand-900 border border-brand-200 text-xs py-2.5 px-3 rounded-lg font-bold transition-colors flex items-center justify-center gap-2">
-                                        <MessageCircle className="w-3.5 h-3.5" /> Recordar
-                                    </a>
-
-                                    {apt.status === AppointmentStatus.COMPLETED && !apt.thankYouSent && (
-                                        <button 
-                                            onClick={() => handleSendThankYou(apt)} 
-                                            className={`w-full text-xs py-2.5 px-3 rounded-lg font-bold transition-colors flex items-center justify-center gap-2 border
-                                            ${pendingThankYous.some(p => p.id === apt.id) 
-                                                ? 'bg-pink-100 text-pink-700 border-pink-300 animate-pulse shadow-sm' 
-                                                : 'bg-white text-pink-600 border-pink-200 hover:bg-pink-50'}`}
-                                        >
-                                            <Heart className="w-3.5 h-3.5" /> Agradecer
-                                        </button>
-                                    )}
-
-                                    <button onClick={() => onDelete(apt.id)} className="w-full bg-white hover:bg-red-50 text-brand-400 hover:text-red-500 border border-transparent hover:border-red-100 text-xs py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-2">
-                                        <Trash2 className="w-3.5 h-3.5" /> Eliminar
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    );
-                })
-            )}
+              ))}
+           </div>
         </div>
       )}
 
-      {/* Settings remains same as original but included for full content requirement */}
       {activeTab === 'settings' && (
-        <div className="bg-white p-6 rounded-xl border border-brand-200 shadow-sm animate-in fade-in duration-500">
-            <h3 className="text-brand-900 font-serif text-xl mb-6 flex items-center gap-2">
-                <QrCode className="w-5 h-5" /> Configurar QRs de Pagos
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {['paymentQr', 'paymentQrSecondary'].map((field, idx) => {
-                    const isPrimary = field === 'paymentQr';
-                    const currentImg = settings[field as keyof AppSettings];
-                    return (
-                        <div key={field} className="flex flex-col gap-4">
-                            <h4 className="text-brand-800 font-bold text-sm uppercase tracking-wider border-b border-brand-100 pb-2">
-                                {isPrimary ? 'Banco Familiar (QR Principal)' : 'Ueno Bank (QR Secundario)'}
-                            </h4>
-                            <div className="relative">
-                                <input 
-                                    type="file" 
-                                    accept="image/*"
-                                    onChange={(e) => handleImageUpload(e, (b64) => onUpdateSettings({ ...settings, [field]: b64 }))}
-                                    className="hidden" 
-                                    id={`qr-${field}`}
-                                />
-                                <label 
-                                    htmlFor={`qr-${field}`}
-                                    className="flex items-center justify-center gap-2 w-full bg-brand-50 border border-dashed border-brand-300 hover:border-brand-900 text-brand-400 hover:text-brand-900 py-6 rounded-xl cursor-pointer transition-all"
-                                >
-                                    <Upload className="w-5 h-5" />
-                                    {currentImg ? 'Cambiar QR' : 'Subir QR'}
-                                </label>
-                            </div>
-                            {currentImg && (
-                                <div className="relative group w-fit mx-auto">
-                                    <img src={currentImg} alt="QR" className="w-48 h-48 object-contain rounded-lg border border-brand-200 bg-white p-2" />
-                                    <button 
-                                        onClick={() => onUpdateSettings({...settings, [field]: undefined})}
-                                        className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                                    >
-                                        <Trash2 className="w-3 h-3" />
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    );
-                })}
+        <div className="animate-in fade-in duration-700 max-w-3xl mx-auto bg-white p-8 md:p-16 rounded-[2.5rem] border border-brand-200 shadow-2xl space-y-12">
+            <div className="text-center">
+              <Sparkles className="w-12 h-12 text-gold-500 mx-auto mb-6" />
+              <h3 className="font-serif text-3xl md:text-5xl text-brand-900">Ajustes Studio</h3>
+              <p className="text-[10px] font-black text-brand-300 uppercase tracking-widest mt-5">Configuración Global</p>
+            </div>
+            
+            <div className="p-8 bg-blue-50/40 border border-blue-100 rounded-[2rem] shadow-inner">
+                <div className="flex items-center gap-4 mb-6">
+                    <CloudSync className="w-6 h-6 text-blue-600" />
+                    <h4 className="font-serif text-2xl text-blue-900">Sincronización Cloud (Google Sheets)</h4>
+                </div>
+                <input 
+                  type="text" 
+                  placeholder="URL del Webhook de Google Script"
+                  className="w-full bg-white border border-blue-200 p-5 rounded-2xl text-xs font-mono outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all shadow-sm"
+                  value={settings.googleSheetWebhookUrl || ''}
+                  onChange={e => onUpdateSettings({...settings, googleSheetWebhookUrl: e.target.value})}
+                />
             </div>
         </div>
       )}
-      
-      <button 
-        onClick={() => setIsAuthenticated(false)}
-        className="mt-12 text-brand-400 hover:text-brand-900 text-xs uppercase tracking-widest w-full text-center border-t border-brand-200 pt-4"
-      >
-        Cerrar Sesión
-      </button>
 
-      {viewProof && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onClick={() => setViewProof(null)}>
-            <div className="relative max-w-lg w-full bg-white rounded-lg p-2 shadow-2xl">
-                <button className="absolute -top-12 right-0 text-white hover:text-brand-200 flex gap-2 items-center">Cerrar [X]</button>
-                <img src={viewProof} alt="Comprobante" className="w-full h-auto rounded" />
-            </div>
+      {editingService && (
+        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center bg-brand-900/90 backdrop-blur-xl p-0 md:p-6 animate-in fade-in duration-300">
+           <div className="bg-white w-full max-w-2xl rounded-t-[2.5rem] md:rounded-[4rem] shadow-2xl overflow-hidden flex flex-col max-h-[92vh] animate-in slide-in-from-bottom-20 duration-500">
+              <div className="p-8 md:p-12 border-b border-brand-50 flex justify-between items-center bg-white sticky top-0 z-10">
+                 <h3 className="font-serif text-3xl md:text-5xl text-brand-900">Editar Servicio</h3>
+                 <button onClick={() => setEditingService(null)} className="p-4 bg-brand-50 rounded-full hover:bg-brand-900 hover:text-white transition-all"><X className="w-7 h-7" /></button>
+              </div>
+              <div className="p-8 md:p-12 space-y-8 overflow-y-auto custom-scrollbar flex-1">
+                 {serviceError && (
+                   <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex items-center gap-3 text-red-700 text-sm font-bold animate-in shake duration-300">
+                     <AlertCircle className="w-5 h-5 shrink-0" />
+                     <span>{serviceError}</span>
+                   </div>
+                 )}
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Nombre</label>
+                       <input type="text" className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all font-bold text-lg" value={editingService.title} onChange={e => setEditingService({...editingService, title: e.target.value})} />
+                    </div>
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Precio (Gs)</label>
+                       <input type="number" className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all font-mono font-black text-2xl" value={editingService.price} onChange={e => setEditingService({...editingService, price: Number(e.target.value)})} />
+                    </div>
+                 </div>
+                 <div className="space-y-3">
+                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Descripción</label>
+                    <textarea className="w-full bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all h-32 text-sm leading-relaxed" value={editingService.description} onChange={e => setEditingService({...editingService, description: e.target.value})} />
+                 </div>
+                 <div className="space-y-3">
+                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest ml-1">Imagen (URL o Subir)</label>
+                    <div className="flex flex-col md:flex-row gap-5">
+                       <input type="text" className="flex-1 bg-brand-50 border border-brand-100 p-5 rounded-2xl outline-none focus:border-brand-900 transition-all text-xs font-mono" value={editingService.image} onChange={e => setEditingService({...editingService, image: e.target.value})} placeholder="https://..." />
+                       <label className="cursor-pointer bg-brand-900 text-white px-8 py-5 rounded-2xl hover:bg-black active:scale-95 transition-all flex items-center justify-center gap-3 shadow-2xl">
+                          <Upload className="w-5 h-5" />
+                          <span className="text-[10px] font-black uppercase tracking-widest">Subir Imagen</span>
+                          <input type="file" className="hidden" accept="image/*" onChange={async e => {if(e.target.files?.[0]){ const b64 = await compressImage(e.target.files[0]); setEditingService({...editingService, image: b64}); }}} />
+                       </label>
+                    </div>
+                 </div>
+              </div>
+              <div className="p-8 md:p-12 border-t bg-brand-50/50 flex justify-center sticky bottom-0 z-10 backdrop-blur-md">
+                 <button onClick={saveService} className="w-full md:w-auto px-20 py-6 bg-brand-900 text-white rounded-[2rem] font-black uppercase tracking-widest text-xs shadow-2xl hover:bg-black active:scale-95 transition-all">Guardar Cambios</button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {viewReceipt && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-brand-900/98 backdrop-blur-3xl p-4 md:p-20 animate-in fade-in duration-500" onClick={() => setViewReceipt(null)}>
+           <div className="relative max-w-3xl w-full flex flex-col items-center gap-10" onClick={e => e.stopPropagation()}>
+              <div className="bg-white p-3 md:p-5 rounded-[3rem] md:rounded-[5rem] shadow-[0_0_100px_rgba(212,175,55,0.2)] border border-white/20 relative group scale-100 hover:scale-[1.02] transition-transform duration-700">
+                <img src={viewReceipt} className="max-h-[70vh] w-auto rounded-[2rem] md:rounded-[4rem] shadow-2xl border border-brand-50" alt="Recibo" />
+                <button onClick={() => setViewReceipt(null)} className="absolute -top-6 -right-6 p-6 bg-white text-brand-900 rounded-full shadow-2xl hover:bg-gold-500 hover:text-white active:scale-90 transition-all duration-300"><X className="w-8 h-8" /></button>
+              </div>
+              <div className="text-center">
+                <p className="text-white font-serif text-2xl md:text-3xl italic mb-2 tracking-wide">Comprobante Digital Diva</p>
+                <div className="w-20 h-1 bg-gold-500 mx-auto rounded-full opacity-60"></div>
+                <p className="text-gold-400/50 text-[10px] font-black uppercase tracking-[0.6em] mt-6">Cierre de Transacción</p>
+              </div>
+           </div>
         </div>
       )}
     </div>

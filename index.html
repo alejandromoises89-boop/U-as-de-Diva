@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="es">
   <head>
@@ -7,7 +8,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;700&family=Monsieur+La+Doulaise&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;700&family=Monsieur+La+Doulaise&family=Montserrat:wght@300;400;500;600;700;900&display=swap" rel="stylesheet">
     <script>
       tailwind.config = {
         theme: {
@@ -34,11 +35,16 @@
             },
             animation: {
               'bounce-subtle': 'bounce-subtle 2s infinite',
+              'shimmer': 'shimmer 2s infinite linear',
             },
             keyframes: {
               'bounce-subtle': {
                 '0%, 100%': { transform: 'translateY(0)' },
                 '50%': { transform: 'translateY(-4px)' },
+              },
+              'shimmer': {
+                '0%': { transform: 'translateX(-100%)' },
+                '100%': { transform: 'translateX(100%)' },
               }
             }
           }
@@ -49,31 +55,72 @@
       body {
         background-color: #FAF9F6;
         color: #2C241B;
+        font-feature-settings: "lnum";
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
       }
-      /* Custom scrollbar */
+      
+      html {
+        scroll-behavior: smooth;
+      }
+
       ::-webkit-scrollbar {
-        width: 8px;
+        width: 6px;
+        height: 6px;
       }
       ::-webkit-scrollbar-track {
         background: #FAF9F6; 
       }
       ::-webkit-scrollbar-thumb {
         background: #DCC8B3; 
-        border-radius: 4px;
+        border-radius: 10px;
       }
       ::-webkit-scrollbar-thumb:hover {
         background: #D4AF37; 
       }
 
-      .shimmer {
-        background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-        background-size: 200% 100%;
-        animation: shimmer 1.5s infinite linear;
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
       }
 
-      @keyframes shimmer {
-        0% { background-position: -200% 0; }
-        100% { background-position: 200% 0; }
+      .text-balance {
+        text-wrap: balance;
+      }
+
+      input, select, textarea {
+        font-size: 16px !important;
+      }
+
+      .premium-card {
+        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .premium-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 20px 40px -15px rgba(44, 36, 27, 0.1);
+      }
+
+      .shimmer {
+        position: relative;
+        overflow: hidden;
+      }
+      .shimmer::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(255, 255, 255, 0.6),
+          transparent
+        );
+        animation: shimmer 2s infinite;
       }
     </style>
   <script type="importmap">
@@ -82,7 +129,9 @@
     "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
     "react/": "https://esm.sh/react@^19.2.3/",
     "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "jspdf": "https://esm.sh/jspdf@^2.5.1",
+    "jspdf-autotable": "https://esm.sh/jspdf-autotable@^3.8.2"
   }
 }
 </script>
